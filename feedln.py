@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import curses
 import csv
+from typing import List, Set
 import feedparser
 import sqlite3
 import requests
@@ -15,24 +16,39 @@ import re
 import logging
 import xml.etree.ElementTree as ET
 
-program = "Feedln"
-version = "1.0.4"
-database = "feedln.sq3"
-feedfile = "feedln.csv"
-cfgfile = "feedln.cfg"
-logfile = "feedln.log"
-reqtimeout = 8
 
-browser = os.environ.get("BROWSER", "xdg-open")
-media = os.environ.get("PLAYER", "xdg-open")
-xterm = "-fa 'Monospace' -fs 14"
-editor = os.environ.get("EDITOR", "nano")
 
-logging.basicConfig(
-    filename=logfile,  # Log file name
-    level=logging.INFO,      # Log level
-    format='%(asctime)s - %(levelname)s - %(message)s'  # Log message format
-)
+def initialize_global_variables():
+    global program, version, database, feedfile, cfgfile, logfile, reqtimeout, media, browser, xterm, editor, reqtimeout,feedfile
+    program = "Feedln"
+    version = "1.0.4"
+    reqtimeout = 8
+
+    # Expand ~/.config/feedln to the absolute path
+    BASE_DIR = os.path.expanduser("~/.config/feedln")
+    if os.path.exists(BASE_DIR):
+        # Use the user-given configuration files
+        database = os.path.join(BASE_DIR, "feedln.sq3")
+        feedfile = os.path.join(BASE_DIR, "feedln.csv")
+        cfgfile = os.path.join(BASE_DIR, "feedln.cfg")
+        logfile = os.path.join(BASE_DIR, "feedln.log")
+    else:
+        # Use the current directory
+        database = "feedln.sq3"
+        feedfile = "feedln.csv"
+        cfgfile = "feedln.cfg"
+        logfile = "feedln.log"
+
+    browser = os.environ.get("BROWSER", "xdg-open")
+    media = os.environ.get("PLAYER", "xdg-open")
+    xterm = "-fa 'Monospace' -fs 14"
+    editor = os.environ.get("EDITOR", "nano")
+
+    logging.basicConfig(
+        filename=logfile,  # Log file name
+        level=logging.INFO,      # Log level
+        format='%(asctime)s - %(levelname)s - %(message)s'  # Log message format
+    )
 
 def log_event(message):
     """Log an event with the specified message."""
@@ -240,7 +256,7 @@ def load_csv_feedfile_to_db(csv_file, conn):
                     pass
     conn.commit()
 
-def load_opml_feedfile_to_db(opml_file_path, conn):
+def extract_feeds_from_opml_file(opml_file_path:str) -> List:
     # Parse the feed file in opml format into the database
     tree = ET.parse(opml_file_path)
     root = tree.getroot()
@@ -273,7 +289,10 @@ def load_opml_feedfile_to_db(opml_file_path, conn):
             if 'text' in outline.attrib:
                 category_stack.append(outline.attrib['text'])
             process_outline(outline, category_stack)
+    return feeds
 
+def load_opml_feedfile_to_db(opml_file_path, conn):
+    feeds = extract_feeds_from_opml_file(opml_file_path)
     # feeds contain the list of all rss feeds in the opml file
     cursor = conn.cursor()
     for feed in feeds:
@@ -307,11 +326,15 @@ def load_opml_feedfile_to_db(opml_file_path, conn):
                         (feed_id, category)
                     )
         except sqlite3.IntegrityError as e:
-                print(f"Skipping duplicate feed: {row['URL']} - {e}")
+                print(f"Skipping duplicate feed: {feed['url']} - {e}")
                 pass
     conn.commit()
 
 def load_feeds_to_db(feedfile, conn):
+    # Check the existence of the feed file
+    if not os.path.exists(feedfile):
+        log_event(f"Feed file {feedfile} does not exist.")
+        return
     if feedfile.endswith(".csv"):
         load_csv_feedfile_to_db(feedfile, conn)
     elif feedfile.endswith(".opml"):
@@ -472,16 +495,27 @@ def maxlength(stdscr):
     height, width = stdscr.getmaxyx()
     return width
 
-def clear_feeds_not_in_csv(stdscr,conn, csv_file):
+def load_feed_urls(feedfile:str) -> Set[str]:
+    # Assuming URL is the unique identifier
+    feeds = set()
+    if feedfile.endswith(".csv"):
+        with open(feedfile, mode="r") as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                feeds.add(row["URL"])
+    elif feedfile.endswith(".opml"):
+        feed_list = extract_feeds_from_opml_file(feedfile)
+        for feed in feed_list:
+            feeds.add(feed["url"])
+    return feeds
+
+def clear_feeds_not_in_csv(stdscr,conn, feedfile):
     if not confirm(stdscr,"Erase orphan feeds? Write 'yes' to confirm:"):
         return
     
-    # Load feeds from CSV
-    csv_feeds = set()
-    with open(csv_file, mode="r") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            csv_feeds.add(row["URL"])  # Assuming URL is the unique identifier
+    # Load feeds
+    feeds = set()
+    load_feed_urls(feedfile)
 
     cursor = conn.cursor()
     # Fetch current feeds from the database
@@ -489,7 +523,7 @@ def clear_feeds_not_in_csv(stdscr,conn, csv_file):
     db_feeds = cursor.fetchall()
 
     # Identify feeds to delete
-    feeds_to_delete = [feed[0] for feed in db_feeds if feed[0] not in csv_feeds]
+    feeds_to_delete = [feed[0] for feed in db_feeds if feed[0] not in feeds]
 
     # Delete feeds not in CSV
     for url in feeds_to_delete:
@@ -1288,6 +1322,7 @@ def initialize_screen(stdscr, conn):
 
 # Main function
 def main():
+    initialize_global_variables()
     global feedfile
     load_config() # Load user defined variables
     check_feed_file() # Check feed file, add default if not exist
