@@ -14,6 +14,8 @@ import configparser
 from textwrap import wrap
 import re
 import logging
+import asyncio
+import aiohttp
 import xml.etree.ElementTree as ET
 
 
@@ -418,6 +420,49 @@ def fetch_feeds_by_category(conn, category, orderby='c.name'):
     feeds = cursor.fetchall()
     return feeds  # Return the list of feeds
 
+async def fetch_feed_content(session, feed):
+    try:
+        async with session.get(feed[2]) as response:
+            content = await response.text()
+            if response.status == 200:
+                log_event("Fetch content from feed: " + feed[2])
+                return (feed, content)
+            else:
+                log_event(f"Fail to fetch feed content: {feed[1]}, reason: {response.status}")
+                return (feed, None)
+    except asyncio.TimeoutError as e:
+        log_event(f"Fail to fetch feed content: {feed[1]}, reason: {e}")
+        return (feed, None)
+
+async def fetch_all_seed_content(feeds):
+    log_event("Start to fetch contents from all feeds...")
+    global reqtimeout
+    headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7'
+    }
+    async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(reqtimeout)) as session:
+        tasks = [fetch_feed_content(session, feed) for feed in feeds]
+        results = await asyncio.gather(*tasks)
+        #log_event(results)
+        return results
+
+def fetch_all_feeds(conn, stdscr):
+    orderi = 3
+    categories = fetch_categories(conn,orderi)
+    feeds = []
+    for category in categories:
+        feeds.extend(fetch_feeds_by_category(conn, category[0]))
+    footerpop(stdscr,"Start to fetch all feeds...", delay=1)
+    results = asyncio.run(fetch_all_seed_content(feeds))
+    #log_event(resutls)
+    footerpop(stdscr, f"Successfully fetch {len([r for r in results if r[1] is not None])} / {len(results)} feeds.", delay=1)
+    for result in results:
+        update_feed_items_according_to_content(stdscr, conn, result)
+    footerpop(stdscr, f"Successfully update {len([r for r in results if r[1] is not None])} / {len(results)} feeds.", delay=2)
+    #log_event(feeds)
+
 # Fetch items for a feed
 def fetch_feed_items(conn, feed_id,sort=1):
     #1 sort by date
@@ -433,7 +478,31 @@ def fetch_feed_items(conn, feed_id,sort=1):
     return cursor.fetchall()
 
 # Update feed items in database
-def update_feed_items(stdscr,conn, feed):
+def update_feed_items_according_to_content(stdscr,conn,result):
+    cursor = conn.cursor()
+    if result[1] is None:
+        return
+    feed = result[0]
+    parsed_feed = feedparser.parse(result[1])  # Parse the content with feedparser
+    for entry in parsed_feed.entries:
+        updated_parsed = entry.get("updated_parsed")
+        created_parsed = entry.get("created_parsed")
+        if created_parsed is None:
+            created_parsed = entry.get("published_parsed")
+        timestamp_update = int(time.mktime(updated_parsed)) if updated_parsed else 0
+        timestamp_create = int(time.mktime(created_parsed)) if created_parsed else 0
+        content = entry.get("content", [{}])[0].get("value", "")
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO feed_items (feed_id, title, summary, content, last_updated, created, link)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (feed[0], entry.title, entry.summary, content, timestamp_update, timestamp_create, entry.link)
+        )
+    log_event(f"Updated: {feed[2]} with {len(parsed_feed.entries)} items")
+    conn.commit()
+
+def update_feed_items(stdscr, conn, feed):
     global reqtimeout
     cursor = conn.cursor()
     try:
@@ -441,7 +510,7 @@ def update_feed_items(stdscr,conn, feed):
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7'
-}
+        }
         response = requests.get(feed[2], headers=headers, timeout=reqtimeout)
         if response.status_code == 200:
             parsed_feed = feedparser.parse(response.content)  # Parse the content with feedparser
@@ -734,8 +803,9 @@ def display_categories(stdscr, conn):
         elif key == ord("f"):  # Fetch one category
             update_feeds_by_category(conn, categories[current_category][0], stdscr)
         elif key == ord("F"):  # Update All Categories
-            for cat in categories:
-                update_feeds_by_category(conn, cat[0], stdscr)
+            fetch_all_feeds(conn, stdscr)
+            #for cat in categories:
+            #    update_feeds_by_category(conn, cat[0], stdscr)
         elif key == ord("q") or key == curses.KEY_LEFT or key == 27:
             break
         elif key == ord("r"):  # Mark Category as read
