@@ -19,10 +19,10 @@ import xml.etree.ElementTree as ET
 
 
 def initialize_global_variables():
-    global program, version, database, feedfile, cfgfile, logfile, reqtimeout, media, browser, xterm, editor, reqtimeout,feedfile
+    global program, version, database, feedfile, cfgfile, logfile, reqtimeout, media, browser, xterm, editor, feedfile
     program = "Feedln"
     version = "1.0.4"
-    reqtimeout = 8
+    reqtimeout = 10
 
     # Expand ~/.config/feedln to the absolute path
     BASE_DIR = os.path.expanduser("~/.config/feedln")
@@ -438,15 +438,18 @@ def update_feed_items(stdscr,conn, feed):
     cursor = conn.cursor()
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7'
+}
         response = requests.get(feed[2], headers=headers, timeout=reqtimeout)
         if response.status_code == 200:
             parsed_feed = feedparser.parse(response.content)  # Parse the content with feedparser
             for entry in parsed_feed.entries:
                 updated_parsed = entry.get("updated_parsed")
                 created_parsed = entry.get("created_parsed")
-
+                if created_parsed is None:
+                    created_parsed = entry.get("published_parsed")
                 timestamp_update = int(time.mktime(updated_parsed)) if updated_parsed else 0
                 timestamp_create = int(time.mktime(created_parsed)) if created_parsed else 0
                 content = entry.get("content", [{}])[0].get("value", "")
@@ -457,6 +460,7 @@ def update_feed_items(stdscr,conn, feed):
                     """,
                     (feed[0], entry.title, entry.summary, content, timestamp_update, timestamp_create, entry.link)
                 )
+            log_event(f"Updated: {feed[2]} with {len(parsed_feed.entries)} items")
         else:
             txt = f"Failed to retrieve: {feed[2]} Code:{response.status_code}"
             footerpop(stdscr,txt,1)
