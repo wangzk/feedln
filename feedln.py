@@ -13,6 +13,7 @@ import configparser
 from textwrap import wrap
 import re
 import logging
+import xml.etree.ElementTree as ET
 
 program = "Feedln"
 version = "1.0.4"
@@ -22,10 +23,10 @@ cfgfile = "feedln.cfg"
 logfile = "feedln.log"
 reqtimeout = 8
 
-browser = os.environ["BROWSER"] #get settings from environment
-media = os.environ["PLAYER"] #"mpv"
+browser = os.environ.get("BROWSER", "xdg-open")
+media = os.environ.get("PLAYER", "xdg-open")
 xterm = "-fa 'Monospace' -fs 14"
-editor = os.environ["EDITOR"]
+editor = os.environ.get("EDITOR", "nano")
 
 logging.basicConfig(
     filename=logfile,  # Log file name
@@ -39,7 +40,7 @@ def log_event(message):
 
 
 def load_config():
-    global media, xterm, editor,reqtimeout, media, browser, xterm, editor, reqtimeout
+    global media, xterm, editor,reqtimeout, media, browser, xterm, editor, reqtimeout,feedfile
     config_file = cfgfile  # Assuming cfgfile is the path to your config file
     if os.path.exists(config_file):
         config = configparser.ConfigParser()
@@ -50,6 +51,7 @@ def load_config():
             xterm = config['Settings'].get('xterm', xterm)
             editor = config['Settings'].get('editor', editor)
             reqtimeout = int(config['Settings'].get('reqtimeout', reqtimeout))
+            feedfile = config['Settings'].get('feed_file', "feedln.csv")
     else:
         if not editor: editor = "nano"
         if not browser: browser = "firefox"
@@ -191,7 +193,7 @@ def delete_database_file(stdscr):
     curses.curs_set(0)
 
 # Load feeds from CSV into database
-def load_feeds_to_db(csv_file, conn):
+def load_csv_feedfile_to_db(csv_file, conn):
     cursor = conn.cursor()
     with open(csv_file, mode="r") as file:
         reader = csv.DictReader(file)
@@ -237,6 +239,85 @@ def load_feeds_to_db(csv_file, conn):
                     print(f"Skipping duplicate feed: {row['URL']} - {e}")
                     pass
     conn.commit()
+
+def load_opml_feedfile_to_db(opml_file_path, conn):
+    # Parse the feed file in opml format into the database
+    tree = ET.parse(opml_file_path)
+    root = tree.getroot()
+    # initialize the feed list
+    feeds = []
+
+    def process_outline(outline, category_stack):
+        if 'xmlUrl' in outline.attrib:
+            feed = {
+                'name': outline.attrib.get('text', ''),
+                'url': outline.attrib['xmlUrl'],
+                'category': list(category_stack)  # 使用栈中的分类信息
+            }
+            feeds.append(feed)
+        # traverse the outline element in a recursive manner
+        for child in outline.findall('outline'):
+            # 如果有text属性，则将其视为分类名并加入栈中
+            if 'text' in child.attrib:
+                category_stack.append(child.attrib['text'])
+            process_outline(child, category_stack)
+            # 回溯时从栈中移除当前分类
+            if 'text' in child.attrib:
+                category_stack.pop()
+
+    # 查找body下的所有outline元素
+    body = root.find('body')
+    if body is not None:
+        for outline in body.findall('outline'):
+            category_stack = []
+            if 'text' in outline.attrib:
+                category_stack.append(outline.attrib['text'])
+            process_outline(outline, category_stack)
+
+    # feeds contain the list of all rss feeds in the opml file
+    cursor = conn.cursor()
+    for feed in feeds:
+        try:
+            cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO feeds (name, url, tags)
+                        VALUES (?, ?, ?)
+                        """,
+                        (feed["name"], feed["url"], feed['category'][0] if feed['category'] else '')
+                    )
+            feed_id = cursor.lastrowid  # Get the last inserted feed ID
+            # Handle multiple categories, split by ';'
+            category_field = feed['category'][0] if feed['category'] else ''
+            if len(category_field) > 0:  # Check if the field is not None or empty
+                categories = category_field.split(";")  # Split categories by semicolon
+                for category in categories:
+                    category = category.strip()  # Remove whitespace
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO categories (name)
+                        VALUES (?)
+                        """,
+                        (category,)
+                    )
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO feed_categories (feed_id, category_id)
+                        SELECT ?, id FROM categories WHERE name = ?
+                        """,
+                        (feed_id, category)
+                    )
+        except sqlite3.IntegrityError as e:
+                print(f"Skipping duplicate feed: {row['URL']} - {e}")
+                pass
+    conn.commit()
+
+def load_feeds_to_db(feedfile, conn):
+    if feedfile.endswith(".csv"):
+        load_csv_feedfile_to_db(feedfile, conn)
+    elif feedfile.endswith(".opml"):
+        load_opml_feedfile_to_db(feedfile, conn)
+    else:
+        log_event(f"Cannot recognize the feed file format. Currently, only .csv and .opml are supported.")
 
 # Fetch categories from database
 def fetch_categories(conn, orderby=1):
@@ -333,7 +414,10 @@ def update_feed_items(stdscr,conn, feed):
     global reqtimeout
     cursor = conn.cursor()
     try:
-        response = requests.get(feed[2], timeout=reqtimeout)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(feed[2], headers=headers, timeout=reqtimeout)
         if response.status_code == 200:
             parsed_feed = feedparser.parse(response.content)  # Parse the content with feedparser
             for entry in parsed_feed.entries:
@@ -1208,8 +1292,8 @@ def main():
     load_config() # Load user defined variables
     check_feed_file() # Check feed file, add default if not exist
     conn = setup_database()
-    csv_file = feedfile  # Path to your CSV file
-    load_feeds_to_db(csv_file, conn)
+    #csv_file = feedfile  # Path to your CSV file
+    load_feeds_to_db(feedfile, conn)
     curses.wrapper(lambda stdscr: initialize_screen(stdscr, conn))
 
 if __name__ == "__main__":
