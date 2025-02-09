@@ -1391,7 +1391,7 @@ def initialize_screen(stdscr, conn):
     curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)  # Color pair 1: White text on black background
     curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLUE)    # Color pair 2: Yellow text on blue background
     curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_RED)
-    curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_GREEN) # Footer notification
+    curses.init_pair(4, curses.COLOR_MAGENTA, curses.COLOR_WHITE) # Footer notification
     display_categories(stdscr, conn)  # Call the display function after initializing colors 
 
 # Main function
