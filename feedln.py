@@ -1190,6 +1190,52 @@ def mark_item_as_read(conn, item_id,read=1):
     conn.commit()
 
 # Function to display a single feed entry
+# 添加一个计算文本显示宽度的函数
+def get_display_width(text):
+    """
+    计算字符串在终端中的显示宽度，中文和非ASCII字符计为2个宽度，ASCII字符计为1个宽度
+    """
+    width = 0
+    for char in text:
+        # 判断是否为ASCII字符
+        if ord(char) < 128:
+            width += 1
+        else:
+            width += 2
+    return width
+
+# 添加一个考虑中文宽度的文本换行函数
+def wrap_text_with_cjk(text, max_width):
+    """
+    考虑中文宽度的文本换行函数
+    """
+    if not text:
+        return []
+        
+    wrapped_lines = []
+    current_line = ""
+    current_width = 0
+    
+    for char in text:
+        # 计算当前字符的宽度
+        char_width = 1 if ord(char) < 128 else 2
+        
+        # 如果添加当前字符会超过最大宽度，则换行
+        if current_width + char_width > max_width:
+            wrapped_lines.append(current_line)
+            current_line = char
+            current_width = char_width
+        else:
+            current_line += char
+            current_width += char_width
+    
+    # 添加最后一行
+    if current_line:
+        wrapped_lines.append(current_line)
+    
+    return wrapped_lines
+
+# 修改display_feed_entry函数中的文本处理逻辑
 def display_feed_entry(stdscr, conn, feed_item):
     global browser,media,xterm
     cursor = conn.cursor()
@@ -1224,19 +1270,19 @@ def display_feed_entry(stdscr, conn, feed_item):
     # 如果plain_text都是英文，则生成150字左右的中文摘要。
     if is_english_text(plain_text):
         ch_summary = englishSummarize(plain_text, llm_config)
-        plain_text = ch_summary + "\n" + plain_text
+        ch_summary.replace("。", "。\n")
+        plain_text = ch_summary + "\n------\n" + plain_text
     
     # Wrap the text to fit the terminal width
     max_length = maxlength(stdscr) - 1  # Leave space for cursor
     wrapped_lines = []
 
-    lines = plain_text.splitlines()  # Split the text into lines
+    # 使用splitlines分割文本
+    lines = plain_text.splitlines()
     for line in lines:
-        if len(line)>max_length-1:
-            l = wrap(line,max_length-1, drop_whitespace=False, tabsize=4)
-            wrapped_lines.extend(l)
-        else:
-            wrapped_lines.append(line)
+        # 使用考虑中文宽度的换行函数
+        wrapped_line = wrap_text_with_cjk(line, max_length)
+        wrapped_lines.extend(wrapped_line)
 
     current_line_index = 0
     num_lines = len(wrapped_lines)
@@ -1246,8 +1292,28 @@ def display_feed_entry(stdscr, conn, feed_item):
         max_length = maxlength(stdscr) - 1
         stdscr.addstr(0, 0, f"Title:")
         stdscr.addstr(0, max_length-28, f"Date:")
-        stdscr.addstr(1, 0, f"{title[:max_length]}", curses.A_BOLD)
-        stdscr.addstr(2, 0, f"<{link[:max_length-2]}>")
+        # 处理标题的显示宽度
+        title_display = ""
+        title_width = 0
+        for char in title:
+            char_width = 1 if ord(char) < 128 else 2
+            if title_width + char_width > max_length:
+                title_display += "..."
+                break
+            title_display += char
+            title_width += char_width
+        stdscr.addstr(1, 0, f"{title_display}", curses.A_BOLD)
+        # 处理链接的显示宽度
+        link_display = ""
+        link_width = 0
+        for char in link:
+            char_width = 1 if ord(char) < 128 else 2
+            if link_width + char_width > max_length - 2:
+                link_display += "..."
+                break
+            link_display += char
+            link_width += char_width
+        stdscr.addstr(2, 0, f"<{link_display}>")
         stdscr.addstr(0, max_length-22, f"{time.strftime('%Y-%m-%d / %H:%M:%S', time.localtime(last_updated))}", curses.A_BOLD)
         stdscr.addstr(3, 0, "-"*max_length)
 
