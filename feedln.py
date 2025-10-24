@@ -17,8 +17,7 @@ import logging
 import asyncio
 import aiohttp
 import xml.etree.ElementTree as ET
-
-
+from translate import englishTranslate, englishSummarize
 
 def initialize_global_variables():
     global program, version, database, feedfile, cfgfile, logfile, reqtimeout, media, browser, xterm, editor, feedfile
@@ -58,7 +57,7 @@ def log_event(message):
 
 
 def load_config():
-    global media, xterm, editor,reqtimeout, media, browser, xterm, editor, reqtimeout,feedfile
+    global media, xterm, editor,reqtimeout, media, browser, xterm, editor, reqtimeout,feedfile,llm_config
     config_file = cfgfile  # Assuming cfgfile is the path to your config file
     if os.path.exists(config_file):
         config = configparser.ConfigParser()
@@ -70,6 +69,16 @@ def load_config():
             editor = config['Settings'].get('editor', editor)
             reqtimeout = int(config['Settings'].get('reqtimeout', reqtimeout))
             feedfile = config['Settings'].get('feed_file', "feedln.csv")
+        # Large-Language Model related
+        if 'LLM' in config:
+             llm_config = {
+                "api_key": config['LLM'].get('api_key', ""),
+                "model_name": config['LLM'].get('model_name', "hunyuan-turbos-latest"),
+                "api_base": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+                "timeout": 60,
+                "max_tokens": 5000
+            }
+        print("已经获取到LLM配置: %s", llm_config)
     else:
         if not editor: editor = "nano"
         if not browser: browser = "firefox"
@@ -960,15 +969,25 @@ def display_feeds(stdscr, conn, category):
             mark_all_items_as(conn, feeds[current_feed][0],0)
 
 # Function to display feed items
-def display_feed_items(stdscr, conn, feed,category=""):
+# 在导入部分添加
+
+
+# 在适当位置添加英文检测辅助函数
+def is_english_text(text):
+    """检测文本是否主要为英文"""
+    if not text:
+        return False
+    # 计算文本中英语字母的比例
+    english_chars = sum(1 for c in text if c.isalpha() and ord(c) < 128)
+    total_chars = len(text)
+    # 如果英语字母比例超过60%，则认为是英文文本
+    return total_chars > 0 and (english_chars / total_chars) > 0.6
+
+# 修改display_feed_items函数中的标题显示逻辑
+def display_feed_items(stdscr, conn, feed, category=""):
     feed_items = fetch_feed_items(conn, feed[0])
     current_item = 0
     start_index = 0  # Track the starting index for display
-
-    #stdscr.move(0,0)
-    #print(feed_items[1])
-    #print(f"--- {len(feed_items[1])}")
-    #key = stdscr.getch()
     
     while True:
         stdscr.clear()
@@ -976,11 +995,25 @@ def display_feed_items(stdscr, conn, feed,category=""):
         header(stdscr, f": {category} : {feed[1]} [Unread : {unread_count}]")
         max_display = curses.LINES - 2  # Maximum number of items to display
         max_length = maxlength(stdscr) - 1  # Leave space for cursor
-       
+        
         # Display the feed items with proper length handling
         if feed_items:
             for i in range(start_index, min(start_index + max_display, len(feed_items))):
-                title = feed_items[i][1][:max_length - 3]  # Reserve space for status
+                original_title = feed_items[i][1]
+                title = original_title[:max_length - 3]  # Reserve space for status
+                
+                # 检测标题是否为英文，如果是则翻译
+                if False and is_english_text(original_title):
+                    try:
+                        # 调用翻译函数
+                        translated_title = englishTranslate(original_title, llm_config)
+                        # 先显示中文翻译，再显示英文原文
+                        combined_title = f"{translated_title} | {original_title}"
+                        title = combined_title[:max_length - 3]  # 确保不超过最大长度
+                    except Exception as e:
+                        # 翻译失败时只显示原文
+                        logging.error(f"翻译失败: {str(e)}")
+                
                 last_updated = time.strftime('%Y-%m-%d', time.localtime(feed_items[i][4]))  # Format last updated timestamp
                 display_str = f"> {last_updated} | {title}" if i == current_item else f"  {last_updated} | {title}"
                 try:
@@ -1075,8 +1108,22 @@ def display_category_feed_items(stdscr, conn, category=""):
         # Display the feed items with proper length handling
         if feed_items:
             for i in range(start_index, min(start_index + max_display, len(feed_items))):
-                title = feed_items[i][1][:max_length - 20]  # Reserve space for status
+                original_title = feed_items[i][1]
+                title = original_title[:max_length - 20]  # Reserve space for status
                 feedname = feed_items[i][7][:15]
+                
+                # 检测标题是否为英文，如果是则翻译
+                if False and is_english_text(original_title):
+                    try:
+                        # 调用翻译函数
+                        translated_title = englishTranslate(original_title, llm_config)
+                        # 先显示中文翻译，再显示英文原文
+                        combined_title = f"{translated_title} | {original_title}"
+                        title = combined_title[:max_length - 20]  # 确保不超过最大长度
+                    except Exception as e:
+                        # 翻译失败时只显示原文
+                        logging.error(f"翻译失败: {str(e)}")
+                
                 last_updated = time.strftime('%Y-%m-%d', time.localtime(feed_items[i][4]))  # Format last updated timestamp
                 display_str = f"> {last_updated} | {feedname:15} | {title}" if i == current_item else f"  {last_updated} | {feedname:15} | {title}"
                 try:
@@ -1172,8 +1219,13 @@ def display_feed_entry(stdscr, conn, feed_item):
         p.insert_after("]")
 
     # Get the plain text while preserving whitespace
-    plain_text = soup.get_text()
-
+    origin_plain_text = soup.get_text()
+    plain_text = origin_plain_text
+    # 如果plain_text都是英文，则生成150字左右的中文摘要。
+    if is_english_text(plain_text):
+        ch_summary = englishSummarize(plain_text, llm_config)
+        plain_text = ch_summary + "\n" + plain_text
+    
     # Wrap the text to fit the terminal width
     max_length = maxlength(stdscr) - 1  # Leave space for cursor
     wrapped_lines = []

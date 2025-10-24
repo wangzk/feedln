@@ -1,0 +1,14 @@
+[project]
+name = "feedln"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.13.1",
+    "beautifulsoup4>=4.14.2",
+    "feedparser>=6.0.12",
+    "openai>=2.6.0",
+    "pyperclip>=1.11.0",
+    "requests>=2.32.5",
+]
